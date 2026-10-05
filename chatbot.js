@@ -64,7 +64,8 @@
       micNote: "Per escriure amb la veu, l'àudio s'envia a un proveïdor de veu només per convertir-lo en text. Més informació a la <a href=\"{p}\" target=\"_blank\" rel=\"noopener\">política de privacitat</a>.",
       micDenied: "No tinc permís per al micròfon. Revisa els permisos del navegador o escriu la teva pregunta.",
       micEmpty: "No t'he sentit bé. Torna-ho a provar o escriu la teva pregunta.",
-      voiceError: "Ara mateix no puc fer servir la veu. Pots escriure la teva pregunta."
+      voiceError: "Ara mateix no puc fer servir la veu. Pots escriure la teva pregunta.",
+      dataIntake: "Gràcies! Perquè pugui guardar les teves dades i et contactem, revisa'ls i confirma'ls aquí. És imprescindible acceptar la política de privacitat."
     },
     es: {
       launcher: "Habla con el asistente", title: "Asistente Sintel AI", status: "Responde al instante",
@@ -103,7 +104,8 @@
       micNote: "Para escribir con la voz, el audio se envía a un proveedor de voz solo para convertirlo en texto. Más información en la <a href=\"{p}\" target=\"_blank\" rel=\"noopener\">política de privacidad</a>.",
       micDenied: "No tengo permiso para el micrófono. Revisa los permisos del navegador o escribe tu pregunta.",
       micEmpty: "No te he oído bien. Inténtalo de nuevo o escribe tu pregunta.",
-      voiceError: "Ahora mismo no puedo usar la voz. Puedes escribir tu pregunta."
+      voiceError: "Ahora mismo no puedo usar la voz. Puedes escribir tu pregunta.",
+      dataIntake: "¡Gracias! Para guardar tus datos y que te contactemos, revísalos y confírmalos aquí. Es imprescindible aceptar la política de privacidad."
     }
   };
   var T = ALL[LANG];
@@ -130,6 +132,55 @@
     ["leads", /client|lead|captar|captaci|vend|web|xat|chat|bot|asistente|assistent/i]
   ];
   var INTENT = /auditor|contact|truca|llam|reuni|interes|m'interessa|me interesa|vull|quiero|contratar|pressupost|presupuesto/i;
+
+  /* ---------- Dades de contacte escrites o dictades al xat ---------- */
+  // Si algú dóna el telèfon, el correu o el nom, no es respon amb una frase genèrica:
+  // s'obre el formulari amb les dades ja omplertes i amb el consentiment RGPD pendent.
+  // Números dictats: només es fan servir xifres soltes; amb números compostos (setanta-dos, vint-i-tres) el telèfon queda buit
+  var TENS = /^(deu|onze|dotze|tretze|catorze|quinze|setze|disset|divuit|dinou|vint|trenta|quaranta|cinquanta|seixanta|setanta|vuitanta|noranta|cent|diez|once|doce|trece|catorce|quince|veinte|veinti\w*|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa|cien)(-.*)?$/;
+  var DIGIT_MAP = { zero: 0, cero: 0, dos: 2, tres: 3, quatre: 4, cuatro: 4, cinc: 5, cinco: 5, sis: 6, seis: 6, set: 7, siete: 7, vuit: 8, ocho: 8, nou: 9, nueve: 9 };
+  var CONTACT_WORDS = /(el meu|la meva|mi|mis)\s+(n[uú]mero|tel[eè]fon[o]?|m[oò]bil|correu|correo|e-?mail|mail)/i;
+  var EMAIL_RE = /[^\s@,;:<>()]+@[^\s@,;:<>()]+\.[^\s@,;:<>().]+/;
+  var PHONE_RE = /\+?\d[\d\s.\-]{7,}\d/;
+  var NAME_INTRO = /(em dic|em diuen|el meu nom [ée]s|s[oó]c|me llamo|mi nombre es|soy)\s+/i;
+
+  function spoken(text) {
+    var digits = [], ambiguous = false;
+    text.toLowerCase().split(/[\s,;.:!?]+/).forEach(function (t) {
+      if (DIGIT_MAP.hasOwnProperty(t)) digits.push(DIGIT_MAP[t]);
+      else if (TENS.test(t)) ambiguous = true;
+    });
+    return { digits: digits, ambiguous: ambiguous };
+  }
+
+  function sharesContact(text) {
+    if (EMAIL_RE.test(text) || CONTACT_WORDS.test(text)) return true;
+    if (PHONE_RE.test(text) && (text.match(/\d/g) || []).length >= 9) return true;
+    return spoken(text).digits.length >= 5;   // número dictat en paraules
+  }
+
+  function extractContact(text) {
+    var out = { name: "", email: "", phone: "" };
+    var em = text.match(EMAIL_RE);
+    if (em) out.email = em[0];
+    var ph = text.match(PHONE_RE);
+    if (ph) {
+      var d = ph[0].replace(/[^\d+]/g, "");
+      if (d.replace(/\D/g, "").length >= 9) out.phone = d;
+    }
+    var sp = spoken(text);
+    if (!out.phone && !sp.ambiguous && sp.digits.length >= 9) out.phone = sp.digits.join("");
+    var m = NAME_INTRO.exec(text);
+    if (m) {
+      var rest = text.slice(m.index + m[0].length).split(/[\s,.;:!?]+/), name = [];
+      for (var i = 0; i < rest.length && name.length < 3; i++) {
+        var w = rest[i];
+        if (w && w.charAt(0) !== w.charAt(0).toLowerCase()) name.push(w); else break;
+      }
+      out.name = name.join(" ");
+    }
+    return out;
+  }
 
   /* ---------- Estils (colors de la marca) ---------- */
   var css = "" +
@@ -335,6 +386,11 @@
     userTurns++;
     say(text, "user");
     history.push({ role: "user", content: text });
+    if (!formShown && sharesContact(text)) {   // dades de contacte: formulari amb les dades omplertes
+      busy = false;
+      reply(ALL[userLang(text)].dataIntake);
+      return showForm(extractContact(text));
+    }
     var typing = say(T.typing, "bot");
     typing.classList.add("sb-typing");
 
@@ -555,7 +611,8 @@
     return i;
   }
 
-  function showForm() {
+  function showForm(pre) {
+    pre = pre || {};
     formShown = true;
     var f = el("form", "sb-form");
     f.noValidate = true;
@@ -575,6 +632,7 @@
     var no = el("button", "sb-no", T.f.cancel); no.type = "button";
     var ok = el("button", "sb-ok", T.f.submit); ok.type = "submit";
     row.appendChild(no); row.appendChild(ok);
+    name.value = pre.name || ""; email.value = pre.email || ""; phone.value = pre.phone || "";
     [name, email, phone, company, hp, c, err, row].forEach(function (n) { f.appendChild(n); });
     log.appendChild(f);
     scroll();
